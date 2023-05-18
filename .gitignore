@@ -10,6 +10,9 @@
 /releases/
 /resources/
 /vendor/
+/redaxo/src/core/assets/
+/redaxo/src/core/vendor/
+**/.ac-php-conf.json
 
 # Addons
 /redaxo/src/addons/*
