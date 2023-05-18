@@ -102,6 +102,7 @@ class rex_backend_login_ldap extends rex_backend_login
 
         $ds = $this->openLdapConnection();
         if ($ds && ldap_bind($ds, $this->bindDn, $this->clearTextPassword)) {
+            $config = rex::getProperty('backend_login_ldap', []);
             $ldapFilter = '(objectClass=*)'; // ldap command requires some filter
             $attributes = array_values($config['attributes']);
             $searchResult = ldap_read($ds, $this->bindDn, $ldapFilter, $attributes);
