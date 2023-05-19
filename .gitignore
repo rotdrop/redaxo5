@@ -1,5 +1,5 @@
 .php-cs-fixer.cache
-/.htaccess
+#/.htaccess
 /composer.lock
 /.phpunit.cache/
 /assets/
