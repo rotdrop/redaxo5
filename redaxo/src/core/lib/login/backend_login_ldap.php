@@ -2,13 +2,16 @@
 
 class rex_backend_login_ldap extends rex_backend_login
 {
+    public const CONFIG_PREFIX = 'backend_login_ldap';
     private $bindDn = null;
     private $clearTextPassword;
     private static $ignorePassword = false;
+    private $config;
 
     public function __construct()
     {
         parent::__construct();
+        $this->config = rex::getProperty('backend_login_ldap', []);
     }
 
     /** {@inheritdoc} */
@@ -30,12 +33,14 @@ class rex_backend_login_ldap extends rex_backend_login
 
         if ($this->doAuthLdap()) {
             $config = rex::getProperty('backend_login_ldap', []);
-            if ($config['create_users']) {
-                $user = rex_sql::factory();
-                $user->setQuery('SELECT * FROM ' . rex::getTablePrefix() . 'user WHERE login = ?', [$this->userLogin]);
-                if ($user->getRows() === 0) {
+            $user = rex_sql::factory();
+            $user->setQuery('SELECT * FROM ' . rex::getTablePrefix() . 'user WHERE login = ? LIMIT 1', [$this->userLogin]);
+            if ($user->getRows() === 0) {
+                if ($config['create_users']) {
                     $this->addLdapUser();
                 }
+            } else {
+                $this->updateRexUserFromLdap($user);
             }
             // we have overridden the passwordVerify method
             self::$ignorePassword = true;
@@ -92,12 +97,18 @@ class rex_backend_login_ldap extends rex_backend_login
         return null;
     }
 
-    private function addLdapUser()
+    /**
+     * Fetch the supported attributes from LDAP if present.
+     *
+     * @return array
+     */
+    private function fetchLdapAttributes():array
     {
         $ldapValues = [
             'name' => $this->userLogin,
             'email' => null,
             'description' => null,
+            'roles' => null,
         ];
 
         $ds = $this->openLdapConnection();
@@ -110,14 +121,48 @@ class rex_backend_login_ldap extends rex_backend_login
                 $ldapEntry = ldap_get_entries($ds, $searchResult);
                 foreach (array_keys($ldapValues) as $key) {
                     $ldapAttribute = strtolower($config['attributes'][$key] ?? '');
-                    $ldapValue = $ldapEntry[0][$ldapAttribute][0] ?? null;
-                    if (!empty($ldapValue)) {
-                        $ldapValues[$key] = $ldapValue;
+                    $attributeValues = $ldapEntry[0][$ldapAttribute] ?? [];
+                    if (!empty($attributeValues)) {
+                        if ($key == 'roles') {
+                            $ldapValues[$key] = $attributeValues;
+                        } else {
+                            $ldapValues[$key] = $attributeValues[0];
+                        }
                     }
                 }
             }
             ldap_close($ds);
         }
+
+        $rexRoles = [];
+        foreach (($ldapValues['roles'] ?? []) as $ldapRole) {
+            $rexRoles[] = array_search($ldapRole, $config['roles']);
+        }
+        $rexRoles = array_values(array_filter($rexRoles));
+        $isAdmin = array_search('admin', $rexRoles) !== false;
+
+        if ($isAdmin) {
+            $rexRoles = [];
+        } else {
+            // there is no implemented way to get the role id from the name, so search
+            // for it ...
+            $configuredRexRoles = array_keys($config['roles']);
+            $sql = rex_sql::factory();
+            $dbUserRoles = $sql->getArray('SELECT id, name FROM ' . rex::getTablePrefix() . 'user_role WHERE FIND_IN_SET(name, ?)', [implode(',', $configuredRexRoles)]);
+            $dbUserRoles = array_column($dbUserRoles, 'id', 'name');
+            $rexRoles = array_values(array_intersect_key($dbUserRoles, array_flip($rexRoles)));
+        }
+
+        $ldapValues['isAdmin'] = (int)$isAdmin;
+        $ldapValues['roles'] = $rexRoles;
+        $ldapValues['overrideRoles'] = array_values($dbUserRoles ?? []);
+
+        return $ldapValues;
+    }
+
+    private function addLdapUser()
+    {
+        $ldapValues = $this->fetchLdapAttributes();
 
         $userStatus = 1;
         $userPswHash = rex_login::passwordHash($this->clearTextPassword);
@@ -129,10 +174,10 @@ class rex_backend_login_ldap extends rex_backend_login
         $addUser->setValue('login', $this->userLogin);
         $addUser->setValue('description', $ldapValues['description']);
         $addUser->setValue('email', $ldapValues['email']);
-        $addUser->setValue('admin', 0);
+        $addUser->setValue('admin', $ldapValues['isAdmin']);
         $addUser->setValue('language', '');
         $addUser->setValue('startpage', '');
-        $addUser->setValue('role', null);
+        $addUser->setValue('role', empty($ldapValues['roles']) ? null : implode(',', ldapValues['roles']));
         $addUser->addGlobalCreateFields();
         $addUser->addGlobalUpdateFields();
         $addUser->setDateTimeValue('password_changed', time());
@@ -147,6 +192,60 @@ class rex_backend_login_ldap extends rex_backend_login
             'user' => rex_user::require((int) $addUser->getLastId()),
             'password' => $this->clearTextPassword,
         ], true));
+    }
+
+    private function updateRexUserFromLdap(rex_sql $userSql)
+    {
+        $ldapValues = $this->fetchLdapAttributes();
+
+        $userId = $userSql->getValue('id');
+
+        $updateSql = rex_sql::factory();
+        $updateSql->setTable(rex::getTablePrefix() . 'user');
+        $updateSql->setWhere(['id' => $userId]);
+
+        $needUpdate = false;
+        if ((int)$ldapValues['isAdmin'] !== (int)$userSql->getValue('admin')) {
+            $needUpdate = true;
+            $updateSql->setValue('admin', (int)$ldapValues['isAdmin']);
+            if ($ldapValues['isAdmin']) {
+                $updateSql->setValue('role', null);
+            }
+        }
+        if (!$ldapValues['isAdmin']) {
+            $currentRoles = explode(',', ($userSql->getValue('role') ?? ''));
+            $newRoles = array_diff($currentRoles, $ldapValues['overrideRoles']);
+            $newRoles = array_merge($newRoles, $ldapValues['roles'] ?? []);
+            sort($currentRoles);
+            sort($newRoles);
+            if ($currentRoles != $newRoles) {
+                $needUpdate = true;
+                $updateSql->setValue('role', implode(',', $newRoles));
+            }
+        }
+        $userPswHash = rex_login::passwordHash($this->clearTextPassword);
+        if ($userPswHash != $userSql->getValue('password')) {
+            $needUpdate = true;
+            $updateSql->setValue('password', $userPswHash);
+            $updateSql->setDateTimeValue('password_changed', time());
+            $updateSql->setValue('password_change_required', 0);
+        }
+        foreach (['name', 'description', 'email'] as $key) {
+            if ($ldapValues[$key] != $userSql->getValue($key)) {
+                $needUpdate = true;
+                $updateSql->setValue($key, $ldapValues[$key]);
+            }
+        }
+        if ($needUpdate) {
+            $updateSql->update();
+            rex_user::clearInstance($userId);
+            $user = rex_user::require($userId);
+            rex_extension::registerPoint(new rex_extension_point('USER_UPDATED', '', [
+                'id' => $userSql->getValue('id'),
+                'user' => $user,
+                'password' => $this->clearTextPassword,
+            ], true));
+        }
     }
 
     /** {@inheritdoc} */
