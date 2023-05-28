@@ -31,6 +31,16 @@ backend_login_ldap:
         name: displayname
         email: mail
         description: description
+        roles: employeeType
+# or e.g.
+#        roles: memberOf
+#   roles:
+#       admin: 'cn=admin,ou=Groups,dc=my,dc=org'
+#       editor: 'cn=people,ou=Groups,dc=my,dc=org'
+    roles:
+        admin: cms-admin
+        editor: cms-editor
+        dummy: cms-dummy
 # using separate cookie domains for frontend and backend is more secure,
 # but be warned that some features like detecting a backend user in the frontend
 # will no longer work.
