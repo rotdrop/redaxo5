@@ -115,18 +115,26 @@ class rex_backend_login_ldap extends rex_backend_login
         if ($ds && ldap_bind($ds, $this->bindDn, $this->clearTextPassword)) {
             $config = rex::getProperty('backend_login_ldap', []);
             $ldapFilter = '(objectClass=*)'; // ldap command requires some filter
-            $attributes = array_values($config['attributes']);
+            $attributes = [];
+            array_walk_recursive($config['attributes' ], function($value) use (&$attributes) { $attributes[] = $value; });
             $searchResult = ldap_read($ds, $this->bindDn, $ldapFilter, $attributes);
             if ($searchResult) {
                 $ldapEntry = ldap_get_entries($ds, $searchResult);
                 foreach (array_keys($ldapValues) as $key) {
-                    $ldapAttribute = strtolower($config['attributes'][$key] ?? '');
-                    $attributeValues = $ldapEntry[0][$ldapAttribute] ?? [];
-                    if (!empty($attributeValues)) {
-                        if ($key == 'roles') {
-                            $ldapValues[$key] = $attributeValues;
-                        } else {
-                            $ldapValues[$key] = $attributeValues[0];
+                    $ldapAttributes = $config['attributes'][$key] ?? [];
+                    if (!is_array($ldapAttributes)) {
+                        $ldapAttributes = [ $ldapAttributes ];
+                    }
+                    foreach ($ldapAttributes as $ldapAttribute) {
+                        $ldapAttribute = strtolower($ldapAttribute);
+                        $attributeValues = $ldapEntry[0][$ldapAttribute] ?? [];
+                        if (!empty($attributeValues)) {
+                            if ($key == 'roles') {
+                                unset($attributeValues['count']);
+                                $ldapValues[$key] = array_merge($ldapValues[$key] ?? [], $attributeValues);
+                            } else {
+                                $ldapValues[$key] = $attributeValues[0];
+                            }
                         }
                     }
                 }
@@ -135,10 +143,17 @@ class rex_backend_login_ldap extends rex_backend_login
         }
 
         $rexRoles = [];
-        foreach (($ldapValues['roles'] ?? []) as $ldapRole) {
-            $rexRoles[] = array_search($ldapRole, $config['roles']);
+        foreach ($config['roles'] as $rexRole => $ldapRoleOptions) {
+            if (!is_array($ldapRoleOptions)) {
+                $ldapRoleOptions = [ $ldapRoleOptions ];
+            }
+            foreach (($ldapValues['roles'] ?? []) as $ldapRole) {
+                if (in_array($ldapRole, $ldapRoleOptions)) {
+                    $rexRoles[] = $rexRole;
+                }
+            }
         }
-        $rexRoles = array_values(array_filter($rexRoles));
+        $rexRoles = array_values(array_unique($rexRoles));
         $isAdmin = array_search('admin', $rexRoles) !== false;
 
         if ($isAdmin) {
