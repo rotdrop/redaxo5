@@ -147,7 +147,9 @@ class rex_backend_login_ldap extends rex_backend_login
             if (!is_array($ldapRoleOptions)) {
                 $ldapRoleOptions = [ $ldapRoleOptions ];
             }
+            $ldapRoleOptions = array_map(fn($value) => strtolower($value), $ldapRoleOptions);
             foreach (($ldapValues['roles'] ?? []) as $ldapRole) {
+                $ldapRole = strtolower($ldapRole);
                 if (in_array($ldapRole, $ldapRoleOptions)) {
                     $rexRoles[] = $rexRole;
                 }
