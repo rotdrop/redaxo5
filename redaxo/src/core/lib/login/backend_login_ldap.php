@@ -194,7 +194,7 @@ class rex_backend_login_ldap extends rex_backend_login
         $addUser->setValue('admin', $ldapValues['isAdmin']);
         $addUser->setValue('language', '');
         $addUser->setValue('startpage', '');
-        $addUser->setValue('role', empty($ldapValues['roles']) ? null : implode(',', ldapValues['roles']));
+        $addUser->setValue('role', empty($ldapValues['roles']) ? null : implode(',', $ldapValues['roles']));
         $addUser->addGlobalCreateFields();
         $addUser->addGlobalUpdateFields();
         $addUser->setDateTimeValue('password_changed', time());
